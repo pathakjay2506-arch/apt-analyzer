@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>APT Network Traffic Analyzer</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <!-- Chart.js from CDN — draws all the interactive charts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+</head>
+<body>
+
+<!-- ══ HEADER ══════════════════════════════════════════════ -->
+<header>
+  <div class="header-inner">
+    <span class="logo-text">APT Analyzer</span>
+    <span class="logo-sub">Network Threat Intelligence</span>
+    <div class="header-tags">
+      <span class="tag">Random Forest</span>
+      <span class="tag">SMOTE</span>
+      <span class="tag">SHAP XAI</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ══ UPLOAD SECTION ══════════════════════════════════════ -->
+  <section id="upload-section">
+    <h1>Detect Advanced Persistent Threats<br>in network traffic</h1>
+    <p class="hero-sub">
+      Upload a labelled CSV (CICIDS 2017/2018 · UNSW-NB15 · CTU-13 · NSL-KDD).
+      The model trains on your data, applies SMOTE, and explains predictions with SHAP.
+    </p>
+    <div class="drop-zone" id="drop-zone">
+      <div class="drop-inner">
+        <div class="drop-icon">↑</div>
+        <p class="drop-title">Drop your CSV here</p>
+        <p class="drop-hint">or <label class="browse-link" for="file-input">browse files</label></p>
+        <p class="drop-hint" style="margin-top:8px;font-size:12px">Max 50 MB · must have a Label/Class/Attack column</p>
+        <input type="file" id="file-input" accept=".csv" style="display:none">
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ LOADING SECTION ═════════════════════════════════════ -->
+  <section id="loading-section" class="hidden">
+    <div class="loading-card">
+      <div class="radar">
+        <div class="ring r1"></div>
+        <div class="ring r2"></div>
+        <div class="ring r3"></div>
+        <div class="sweep"></div>
+        <div class="dot"></div>
+      </div>
+      <p id="loading-msg">Analysing traffic...</p>
+      <div class="loading-steps">
+        <div class="lstep" id="ls1">Cleaning and normalising features</div>
+        <div class="lstep" id="ls2">Applying SMOTE to balance classes</div>
+        <div class="lstep" id="ls3">Training Random Forest (150 trees)</div>
+        <div class="lstep" id="ls4">Computing SHAP explanations</div>
+        <div class="lstep" id="ls5">Building results dashboard</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ RESULTS SECTION ═════════════════════════════════════ -->
+  <section id="results-section" class="hidden">
+
+    <!-- Stat cards row -->
+    <div class="stats-row">
+      <div class="stat-card"><div class="stat-label">Accuracy</div>
+        <div class="stat-value" id="stat-acc">—</div></div>
+      <div class="stat-card"><div class="stat-label">ROC-AUC</div>
+        <div class="stat-value" id="stat-auc">—</div></div>
+      <div class="stat-card"><div class="stat-label">Total flows</div>
+        <div class="stat-value" id="stat-rows">—</div></div>
+      <div class="stat-card"><div class="stat-label">Features used</div>
+        <div class="stat-value" id="stat-feats">—</div></div>
+      <div class="stat-card"><div class="stat-label">Classes found</div>
+        <div class="stat-value" id="stat-classes">—</div></div>
+      <div class="stat-card"><div class="stat-label">SMOTE</div>
+        <div class="stat-value" id="stat-smote">—</div></div>
+    </div>
+
+    <!-- Charts row 1: metrics bar + distribution donut -->
+    <div class="charts-row two-col">
+      <div class="chart-card">
+        <div class="chart-title">Class performance — Precision · Recall · F1</div>
+        <div id="legend-metrics" class="chart-legend"></div>
+        <div style="height:260px"><canvas id="chart-metrics"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Traffic distribution</div>
+        <div style="height:260px"><canvas id="chart-dist"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Charts row 2: features + predicted dist -->
+    <div class="charts-row two-col">
+      <div class="chart-card">
+        <div class="chart-title">Top 15 features — RF importance</div>
+        <div style="height:320px"><canvas id="chart-features"></canvas></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Predicted threat distribution</div>
+        <div style="height:320px"><canvas id="chart-pred"></canvas></div>
+      </div>
+    </div>
+
+    <!-- SHAP plots — images from matplotlib -->
+    <div class="chart-card" id="shap-summary-card">
+      <div class="chart-title">
+        SHAP Feature Importance
+        <span class="xai-badge">XAI</span>
+      </div>
+      <img id="shap-summary-img" class="shap-img" src="" alt="SHAP summary plot">
+    </div>
+
+    <div class="chart-card" id="shap-waterfall-card">
+      <div class="chart-title">
+        SHAP Waterfall — single prediction breakdown
+        <span class="xai-badge">XAI</span>
+      </div>
+      <img id="shap-waterfall-img" class="shap-img" src="" alt="SHAP waterfall plot">
+    </div>
+
+    <!-- Flow predictions table -->
+    <div class="chart-card">
+      <div class="chart-title">Flow-level predictions</div>
+      <div class="table-filters">
+        <select id="filter-class" onchange="filterTable()">
+          <option value="">All classes</option>
+        </select>
+        <select id="filter-correct" onchange="filterTable()">
+          <option value="">All predictions</option>
+          <option value="correct">Correct only</option>
+          <option value="wrong">Wrong only</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table class="flow-table">
+          <thead>
+            <tr>
+              <th>#</th><th>Actual</th><th>Predicted</th>
+              <th>Confidence</th><th>Severity</th><th>Match</th>
+            </tr>
+          </thead>
+          <tbody id="flow-tbody"></tbody>
+        </table>
+      </div>
+      <div class="table-footer">
+        <span id="table-count"></span>
+        <button onclick="downloadCSV()">Download predictions CSV</button>
+      </div>
+    </div>
+
+    <div style="text-align:center;margin-top:24px">
+      <button onclick="resetApp()">Analyse another file</button>
+    </div>
+
+  </section>
+</main>
+
+<footer>
+  <span>APT Network Traffic Analyzer · MTech Research · Jay Pathak</span>
+  <span>Random Forest + SMOTE + SHAP · CICIDS / UNSW-NB15 / CTU-13</span>
+</footer>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
