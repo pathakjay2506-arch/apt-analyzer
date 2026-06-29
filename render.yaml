@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: apt-analyzer
+    runtime: python
+    buildCommand: apt-get install -y gcc g++ python3-dev && pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: FLASK_ENV
+        value: production

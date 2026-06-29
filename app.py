@@ -2,7 +2,12 @@ import os
 import warnings
 warnings.filterwarnings("ignore")          # Suppress sklearn/SMOTE warnings in terminal
 
-import shap
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
+    print("WARNING: shap not installed — SHAP plots will be skipped")
 import matplotlib
 matplotlib.use("Agg")   # IMPORTANT: use non-GUI backend — no screen needed
 import matplotlib.pyplot as plt
@@ -22,6 +27,10 @@ from sklearn.metrics import (
     roc_auc_score
 )
 from imblearn.over_sampling import SMOTE
+def normalize_label(val):
+    """Map raw dataset label → clean display name using LABEL_MAP."""
+    return LABEL_MAP.get(str(val).strip().lower(), str(val).strip())
+
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = "uploads"
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
@@ -258,86 +267,73 @@ def analyze():
     shap_summary_img  = None
     shap_waterfall_img = None
 
-    try:
-        # Use a background sample for speed (200 rows is enough)
-        bg_sample = shap.sample(X_train, min(200, len(X_train)), random_state=42)
+    shap_summary_img   = None
+    shap_waterfall_img = None
 
-        # TreeExplainer is fast and exact for Random Forest
-        explainer = shap.TreeExplainer(rf, bg_sample)
+    if SHAP_AVAILABLE:
+        try:
+            bg_sample = shap.sample(X_train, min(200, len(X_train)), random_state=42)
+            explainer = shap.TreeExplainer(rf, bg_sample)
+            shap_sample = X_test[:min(100, len(X_test))]
+            shap_values = explainer.shap_values(shap_sample)
 
-        # Compute SHAP values on up to 100 test rows
-        shap_sample = X_test[:min(100, len(X_test))]
-        shap_values = explainer.shap_values(shap_sample)
+            if isinstance(shap_values, list):
+                mean_shap = np.abs(np.array(shap_values)).mean(axis=0)
+            else:
+                mean_shap = np.abs(shap_values)
 
-        # ── Plot 1: Summary bar chart ─────────────────────────────
-        # shap_values is a list (one array per class) for multi-class
-        # We take the mean absolute value across all classes
-        if isinstance(shap_values, list):
-            mean_shap = np.abs(np.array(shap_values)).mean(axis=0)
-        else:
-            mean_shap = np.abs(shap_values)
+            fig1 = plt.figure(figsize=(9, 5), facecolor="#0D1117")
+            shap.summary_plot(
+                mean_shap, shap_sample,
+                feature_names=feature_cols,
+                plot_type="bar", show=False,
+                max_display=12, color="#7F77DD"
+            )
+            ax1 = plt.gca()
+            ax1.set_facecolor("#161B22")
+            fig1.patch.set_facecolor("#0D1117")
+            ax1.tick_params(colors="#8B949E", labelsize=8)
+            for spine in ax1.spines.values():
+                spine.set_edgecolor("#30363D")
+            ax1.grid(color="#21262D", linewidth=0.5, axis="x")
+            plt.title("SHAP Feature Importance (mean |SHAP value|)",
+                      color="#E6EDF3", fontsize=11, pad=10)
+            shap_summary_img = fig_to_base64(fig1)
 
-        fig1 = plt.figure(figsize=(9, 5), facecolor="#0D1117")
-        shap.summary_plot(
-            mean_shap,
-            shap_sample,
-            feature_names=feature_cols,
-            plot_type="bar",
-            show=False,             # don't try to open a window
-            max_display=12,         # show top 12 features
-            color="#7F77DD"         # purple bars
-        )
-        ax1 = plt.gca()
-        ax1.set_facecolor("#161B22")
-        fig1.patch.set_facecolor("#0D1117")
-        ax1.tick_params(colors="#8B949E", labelsize=8)
-        for spine in ax1.spines.values():
-            spine.set_edgecolor("#30363D")
-        ax1.grid(color="#21262D", linewidth=0.5, axis="x")
-        plt.title("SHAP Feature Importance (mean |SHAP value|)",
-                  color="#E6EDF3", fontsize=11, pad=10)
-        shap_summary_img = fig_to_base64(fig1)
+            severity_scores = {i: SEVERITY.get(c, 0) for i, c in enumerate(classes)}
+            target_cls_idx  = max(severity_scores, key=severity_scores.get)
 
-        # ── Plot 2: Waterfall for one prediction ─────────────────
-        # Pick the highest-severity class to explain
-        severity_scores = {i: SEVERITY.get(c, 0) for i, c in enumerate(classes)}
-        target_cls_idx  = max(severity_scores, key=severity_scores.get)
+            if isinstance(shap_values, list):
+                sv_single = shap_values[target_cls_idx][0]
+                exp_val   = explainer.expected_value[target_cls_idx]
+            else:
+                sv_single = shap_values[0]
+                exp_val   = explainer.expected_value
 
-        # Get SHAP values and expected value for that class
-        if isinstance(shap_values, list):
-            sv_single = shap_values[target_cls_idx][0]
-            exp_val   = explainer.expected_value[target_cls_idx]
-        else:
-            sv_single = shap_values[0]
-            exp_val   = explainer.expected_value
+            fig2 = plt.figure(figsize=(10, 4), facecolor="#0D1117")
+            shap.waterfall_plot(
+                shap.Explanation(
+                    values        = sv_single,
+                    base_values   = float(exp_val),
+                    data          = shap_sample[0],
+                    feature_names = feature_cols
+                ),
+                max_display=10, show=False
+            )
+            ax2 = plt.gca()
+            ax2.set_facecolor("#161B22")
+            fig2.patch.set_facecolor("#0D1117")
+            ax2.tick_params(colors="#8B949E", labelsize=8)
+            plt.title(
+                f"SHAP Waterfall — sample prediction ({classes[target_cls_idx]})",
+                color="#E6EDF3", fontsize=10, pad=8
+            )
+            shap_waterfall_img = fig_to_base64(fig2)
 
-        fig2 = plt.figure(figsize=(10, 4), facecolor="#0D1117")
-        shap.waterfall_plot(
-            shap.Explanation(
-                values        = sv_single,
-                base_values   = float(exp_val),
-                data          = shap_sample[0],
-                feature_names = feature_cols
-            ),
-            max_display = 10,       # top 10 features in waterfall
-            show        = False
-        )
-        ax2 = plt.gca()
-        ax2.set_facecolor("#161B22")
-        fig2.patch.set_facecolor("#0D1117")
-        ax2.tick_params(colors="#8B949E", labelsize=8)
-        plt.title(
-            f"SHAP Waterfall — sample prediction ({classes[target_cls_idx]})",
-            color="#E6EDF3", fontsize=10, pad=8
-        )
-        shap_waterfall_img = fig_to_base64(fig2)
-
-    except Exception as e:
-        # SHAP failing should NOT crash the whole app
-        print(f"SHAP error (non-fatal): {e}")
-        shap_summary_img   = None
-        shap_waterfall_img = None
-
+        except Exception as e:
+            print(f"SHAP error (non-fatal): {e}")
+            shap_summary_img   = None
+            shap_waterfall_img = None
     # ── Step O: Return everything to the browser ───────────────
     return jsonify({
         "accuracy":          accuracy,
@@ -356,12 +352,7 @@ def analyze():
     })
 
 
-if __name__ == "__main__":
-    os.makedirs("uploads", exist_ok=True)
-    app.run(debug=True, port=5000)
-    import shap
-import matplotlib
-matplotlib.use("Agg")   # IMPORTANT: use non-GUI backend — no screen needed
-import matplotlib.pyplot as plt
-import io               # for saving plots to memory
-import base64           # for converting images to text the browser can receive
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(debug=False, host='0.0.0.0', port=port)
+
