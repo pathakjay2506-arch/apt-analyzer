@@ -26,7 +26,7 @@ def normalize_label(val):
 
 app = Flask(__name__)
 app.config["UPLOAD_FOLDER"] = "uploads"
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2 GB
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024
 
 SAMPLE_SIZE  = 15_000
 CHUNK_SIZE   = 100_000
@@ -53,76 +53,62 @@ LABEL_MAP = {
     "heartbleed":"Exploit",
     "apt":"APT","lateral movement":"APT","exfiltration":"APT",
 }
-
 SEVERITY = {
     "Normal":0,"Recon":1,"Credential Attack":2,"Web Attack":2,
     "DoS":3,"DDoS":3,"Infiltration":4,"Botnet/C2":4,"Exploit":4,"APT":5,
 }
-
 PALETTE = {
     "Normal":"#1D9E75","Recon":"#EF9F27","Credential Attack":"#D85A30",
     "Web Attack":"#D85A30","DoS":"#E24B4A","DDoS":"#E24B4A",
     "Infiltration":"#993C1D","Botnet/C2":"#7F77DD","Exploit":"#D4537E","APT":"#E24B4A",
 }
 
-# ── Expanded list: covers CICIDS, UNSW-NB15, CTU-13, NSL-KDD, BoT-IoT,
-#    CIC-IDS2018, LYCOS-IDS, EDGE-IDS and many Kaggle variants ────────────────
 LABEL_COLUMN_CANDIDATES = [
-    # Exact common names
-    "Label", "label", "Class", "class", "Attack", "attack",
-    "Category", "category", "Type", "type", "Target", "target",
-    "traffic_category", "Traffic Category", "traffic category",
-    "attack_cat", "Attack_cat", "Attack_Cat", "attack_type", "Attack_Type",
-    "attack_category", "Attack Category",
-    "intrusion_type", "Intrusion_Type",
-    "classification", "Classification",
-    "y", "Y",                           # generic ML target columns
-    "outcome", "Outcome",
-    "result", "Result",
-    "flow_label", "Flow_Label",
-    # NSL-KDD
-    "difficulty", "Difficulty",
-    # BoT-IoT
-    "subcategory", "Subcategory",
+    "label","class","attack","category","type","target","traffic_category",
+    "traffic category","attack_cat","attack_type","attack_category",
+    "intrusion_type","classification","y","outcome","result",
+    "flow_label","difficulty","subcategory","threat","threat_type",
+    "malware","malware_type","anomaly","traffic_type","network_class",
 ]
+
+KNOWN_KEYWORDS = {
+    "benign","normal","attack","dos","ddos","bot","recon","apt","scan",
+    "probe","exploit","heartbleed","infiltration","backdoor","shellcode",
+    "worm","fuzz","generic","flood","bruteforce","credential","lateral",
+    "exfil","malicious","anomaly","intrusion","portmap","nerisbotnet",
+}
 
 def detect_label_column(df):
     """
-    1. Try known candidate names (case-insensitive).
-    2. If not found, scan all object/string columns:
-       - Has ≤ 50 unique values AND
-       - At least one value matches a known label keyword.
-    Returns the column name or None.
+    Three-pass detection — strips all column names first.
+    Pass 1: exact name match against known candidates.
+    Pass 2: heuristic — string col, ≤100 unique values, keywords match.
+    Pass 3: last-resort — last column if it's a string/object type.
     """
+    # Always strip before checking
+    df.columns = df.columns.str.strip()
     col_lower = {c.lower(): c for c in df.columns}
 
-    # Pass 1 — exact candidate list (case-insensitive)
+    # Pass 1 — candidate list
     for cand in LABEL_COLUMN_CANDIDATES:
-        if cand.lower() in col_lower:
-            return col_lower[cand.lower()]
+        if cand in col_lower:
+            return col_lower[cand]
 
-    # Pass 2 — heuristic: string column with small cardinality
-    #           whose values overlap with known labels/keywords
-    known_keywords = {
-        "benign","normal","attack","dos","ddos","bot","recon","apt",
-        "scan","probe","exploit","heartbleed","infiltration","backdoor",
-        "shellcode","worm","fuzz","generic","flood","bruteforce",
-        "credential","lateral","exfil","malicious","anomaly","intrusion",
-    }
+    # Pass 2 — heuristic keyword scan
     for col in df.columns:
-        if not (df[col].dtype == object or str(df[col].dtype) == "string"):
+        if df[col].dtype not in [object, "string"]:
             continue
         n_unique = df[col].nunique()
         if n_unique < 2 or n_unique > 100:
             continue
         sample_vals = df[col].dropna().astype(str).str.lower().unique()
-        matches = sum(
-            any(kw in v for kw in known_keywords)
-            for v in sample_vals
-        )
-        # Accept if ≥1 value contains a known keyword
-        if matches >= 1:
+        if any(any(kw in v for kw in KNOWN_KEYWORDS) for v in sample_vals):
             return col
+
+    # Pass 3 — last column fallback if it's non-numeric
+    last_col = df.columns[-1]
+    if df[last_col].dtype == object:
+        return last_col
 
     return None
 
@@ -146,6 +132,7 @@ def read_large_csv(file_obj):
                 total_rows += len(remaining)
             break
     df = pd.concat(chunks, ignore_index=True)
+    df.columns = df.columns.str.strip()   # strip immediately after read
     was_sampled = False
     if len(df) > SAMPLE_SIZE:
         lc = detect_label_column(df)
@@ -184,26 +171,25 @@ def analyze():
                         "original_rows": original_rows,
                         "sample_size": SAMPLE_SIZE}), 400
 
+    # Strip again here just to be safe
     df.columns = df.columns.str.strip()
 
-    # ── Detect label column ────────────────────────────────────
     label_col = detect_label_column(df)
     if label_col is None:
-        # Return helpful error listing actual column names
-        cols_preview = ", ".join(df.columns[:20].tolist())
+        all_cols = ", ".join(df.columns.tolist())   # show ALL columns now
         return jsonify({
             "error": (
-                f"Could not find a label column automatically. "
-                f"Columns found: [{cols_preview}]. "
-                f"Please rename your label column to 'Label' or 'Class'."
+                f"Could not find a label column. "
+                f"All columns in your file: [{all_cols}]. "
+                f"Please rename your label column to 'Label'."
             )
         }), 400
 
     df["_label"] = df[label_col].apply(normalize_label)
 
-    drop_cols = {label_col, "_label", "Flow ID", "Source IP",
-                 "Destination IP", "Src IP", "Dst IP", "Timestamp",
-                 "src_ip", "dst_ip", "flow_id", "timestamp"}
+    drop_cols = {label_col, "_label", "Flow ID", "Source IP", "Destination IP",
+                 "Src IP", "Dst IP", "Timestamp", "src_ip", "dst_ip",
+                 "flow_id", "timestamp"}
     feature_cols = [c for c in df.columns
                     if c not in drop_cols and pd.api.types.is_numeric_dtype(df[c])]
     if len(feature_cols) < 3:
@@ -316,7 +302,7 @@ def analyze():
         "classes": classes, "class_metrics": class_metrics,
         "top_features": top_features, "dist_data": dist_data, "rows": rows,
         "shap_summary_img": shap_summary_img, "shap_waterfall_img": shap_waterfall_img,
-        "label_col_detected": label_col,   # tells frontend which column was used
+        "label_col_detected": label_col,
     })
 
 
